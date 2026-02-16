@@ -1,236 +1,660 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Happy Birthday ❤️</title>
-
-<style>
-body{
-  margin:0;
-  overflow:hidden;
-  background:linear-gradient(to bottom,#3b0f63,#5d1e8c,#200a3a);
-  font-family:'Segoe UI',sans-serif;
-  color:white;
-  text-align:center;
-}
-canvas{
-  position:absolute;
-  top:0;
-  left:0;
-}
-#title{
-  position:absolute;
-  top:50px;
-  width:100%;
-  font-size:42px;
-  font-weight:bold;
-}
-#instruction{
-  position:absolute;
-  top:110px;
-  width:100%;
-  font-size:18px;
-  opacity:.85;
-}
-#message{
-  position:absolute;
-  bottom:80px;
-  width:100%;
-  font-size:18px;
-  line-height:28px;
-}
-</style>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+  <title>Happy Birthday ♡</title>
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#12051f}
+    canvas{display:block;touch-action:manipulation;}
+    /* UI overlay (same idea as pygame pills/cards) */
+    .ui{
+      position:fixed;left:0;right:0;top:0;pointer-events:none;
+      display:flex;flex-direction:column;align-items:center;
+      color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      text-align:center;
+    }
+    .title{
+      margin-top:42px;font-size:48px;font-weight:800;letter-spacing:.5px;
+      text-shadow:0 4px 0 rgba(0,0,0,.25);
+    }
+    .pill{
+      margin-top:18px;
+      padding:10px 16px;
+      border-radius:18px;
+      background:rgba(0,0,0,.35);
+      border:2px solid rgba(255,255,255,.15);
+      font-size:16px;
+      max-width:min(92vw,720px);
+      line-height:1.25;
+    }
+    .msgWrap{
+      position:fixed;left:50%;transform:translateX(-50%);
+      bottom:36px;
+      width:min(92vw,740px);
+      pointer-events:none;
+    }
+    .msgCard{
+      padding:18px 18px;
+      border-radius:22px;
+      background:rgba(0,0,0,.42);
+      border:2px solid rgba(255,255,255,.18);
+      color:#fff;
+      font-size:18px;
+      line-height:1.55;
+      text-shadow:0 1px 0 rgba(0,0,0,.15);
+    }
+  </style>
 </head>
-
 <body>
+  <canvas id="c"></canvas>
 
-<div id="title">Happy Birthday ❤️</div>
-<div id="instruction">Tap anywhere to start</div>
-<div id="message"></div>
+  <div class="ui">
+    <div class="title">Happy Birthday <span aria-hidden="true">♡</span></div>
+    <div id="pill" class="pill">Click anywhere to start</div>
+  </div>
 
-<canvas id="canvas"></canvas>
+  <div class="msgWrap" id="msgWrap" style="display:none">
+    <div class="msgCard" id="msg"></div>
+  </div>
 
-<audio id="music" loop>
-  <source src="https://cdn.pixabay.com/audio/2022/03/15/audio_c8c8a73467.mp3" type="audio/mp3">
-</audio>
+  <!-- Music: upload song.mp3 to same folder -->
+  <audio id="music" src="song.mp3" preload="auto" loop></audio>
 
 <script>
-const canvas = document.getElementById("canvas");
+/* =========================
+   Canvas + HiDPI scaling
+   ========================= */
+const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
-
-let state = "start";
-let candleLit = false;
-let lastClick = 0;
-let fireworks = [];
-let balloons = [];
-let stars = [];
-let messageLines = [
-"We just met 2 days ago, but I still felt something real.",
-"You're beautiful just the way you are.",
-"Keep shining."
-];
-let revealed = 0;
-
-for(let i=0;i<150;i++){
-  stars.push({
-    x:Math.random()*canvas.width,
-    y:Math.random()*canvas.height,
-    r:Math.random()*2
-  });
+function resize(){
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width  = Math.floor(innerWidth * dpr);
+  canvas.height = Math.floor(innerHeight * dpr);
+  canvas.style.width = innerWidth + "px";
+  canvas.style.height = innerHeight + "px";
+  ctx.setTransform(dpr,0,0,dpr,0,0); // draw in CSS pixels
 }
+addEventListener("resize", resize);
+resize();
 
-function drawStars(){
-  ctx.fillStyle="white";
-  stars.forEach(s=>{
-    ctx.beginPath();
-    ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
-    ctx.fill();
-  });
-}
+/* =========================
+   Helpers (ported)
+   ========================= */
+const clamp = (x,a,b)=>Math.max(a,Math.min(b,x));
+const lerp = (a,b,t)=>a+(b-a)*t;
 
-function drawCake(){
-  let cx = canvas.width/2;
-  let cy = canvas.height/2+80;
-
-  // base
-  ctx.fillStyle="#ffd6e8";
-  ctx.fillRect(cx-150,cy,300,150);
-
-  // frosting
-  ctx.fillStyle="#ff69b4";
-  ctx.fillRect(cx-160,cy-50,320,70);
-
-  // candle
-  ctx.fillStyle="#fff0f5";
-  ctx.fillRect(cx-12,cy-120,24,80);
-
-  if(candleLit){
-    ctx.fillStyle="orange";
-    ctx.beginPath();
-    ctx.arc(cx,cy-135,12,0,Math.PI*2);
-    ctx.fill();
+function wrapText(text, maxWidth, font){
+  ctx.save();
+  ctx.font = font;
+  const words = text.split(/\s+/);
+  const lines = [];
+  let cur = "";
+  for(const w of words){
+    const test = (cur ? (cur+" "+w) : w);
+    if(ctx.measureText(test).width <= maxWidth) cur = test;
+    else { if(cur) lines.push(cur); cur = w; }
   }
-
-  return {x:cx-20,y:cy-150,w:40,h:100};
+  if(cur) lines.push(cur);
+  ctx.restore();
+  return lines;
 }
 
-function spawnFirework(){
-  let x=Math.random()*canvas.width;
-  let y=Math.random()*canvas.height/2;
-  for(let i=0;i<50;i++){
-    fireworks.push({
-      x:x,
-      y:y,
-      vx:(Math.random()-0.5)*7,
-      vy:(Math.random()-0.5)*7,
-      life:70
+/* =========================
+   Stars (like pygame)
+   ========================= */
+let stars = [];
+function initStars(){
+  stars = [];
+  for(let i=0;i<150;i++){
+    stars.push({
+      x: Math.random()*innerWidth,
+      y: Math.random()*innerHeight,
+      r: 1 + Math.floor(Math.random()*2),
+      tw: 0.4 + Math.random()*0.8
     });
   }
 }
+initStars();
+
+function drawGradientBG(){
+  // same colors
+  const top = [55,15,95];
+  const mid = [95,20,150];
+  const bot = [25,10,55];
+
+  // vertical gradient (manual like pygame draw lines, but faster with canvas gradient)
+  const g = ctx.createLinearGradient(0,0,0,innerHeight);
+  g.addColorStop(0,   `rgb(${top[0]},${top[1]},${top[2]})`);
+  g.addColorStop(0.55,`rgb(${mid[0]},${mid[1]},${mid[2]})`);
+  g.addColorStop(1,   `rgb(${bot[0]},${bot[1]},${bot[2]})`);
+  ctx.fillStyle = g;
+  ctx.fillRect(0,0,innerWidth,innerHeight);
+}
+
+function drawStars(tick){
+  ctx.fillStyle = "#fff";
+  for(const s of stars){
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+/* =========================
+   Heart (param curve)
+   ========================= */
+function drawHeart(x,y,size, rgba){
+  const pts = [];
+  for(let i=0;i<360;i+=10){
+    const t = i*Math.PI/180;
+    const px = 16*Math.sin(t)**3;
+    const py = 13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t);
+    pts.push([x + px*(size/18), y - py*(size/18)]);
+  }
+  ctx.fillStyle = rgba;
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for(let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/* =========================
+   Sparkle (small star)
+   ========================= */
+function drawSparkle(x,y,r,rgba){
+  ctx.fillStyle = rgba;
+  ctx.beginPath();
+  ctx.moveTo(x, y-r*2);
+  ctx.lineTo(x+r/2, y-r/2);
+  ctx.lineTo(x+r*2, y);
+  ctx.lineTo(x+r/2, y+r/2);
+  ctx.lineTo(x, y+r*2);
+  ctx.lineTo(x-r/2, y+r/2);
+  ctx.lineTo(x-r*2, y);
+  ctx.lineTo(x-r/2, y-r/2);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/* =========================
+   Floating hearts (ported)
+   ========================= */
+let floatingHearts = [];
+function spawnFloatingHeart(){
+  floatingHearts.push({
+    x: 60 + Math.random()*(innerWidth-120),
+    y: innerHeight + 40,
+    vy: 0.8 + Math.random()*0.8,
+    size: 16 + Math.random()*12,
+    a: 255
+  });
+}
+function updateHearts(){
+  const next = [];
+  for(const h of floatingHearts){
+    h.y -= h.vy;
+    h.a -= 1.4;
+    if(h.a>0 && h.y>-80){
+      drawHeart(h.x, h.y, h.size, `rgba(255,80,120,${h.a/255})`);
+      next.push(h);
+    }
+  }
+  floatingHearts = next;
+}
+
+/* =========================
+   Balloons (ported)
+   ========================= */
+let balloons = [];
+const BALLOON_COLS = [
+  [255,90,130],[255,190,90],[120,220,255],[180,140,255],[140,255,190]
+];
+function spawnBalloon(){
+  const c = BALLOON_COLS[(Math.random()*BALLOON_COLS.length)|0];
+  balloons.push({
+    x: 80 + Math.random()*(innerWidth-160),
+    y: innerHeight + 60,
+    vy: 0.6 + Math.random()*0.55,
+    vx: -0.25 + Math.random()*0.5,
+    phase: Math.random()*Math.PI*2,
+    size: 16 + Math.random()*8,
+    col: c
+  });
+}
+function drawBalloon(b,tick){
+  const x = b.x + Math.sin(tick*0.02 + b.phase)*8;
+  const y = b.y;
+  const s = b.size;
+
+  // string
+  ctx.strokeStyle = "rgba(255,255,255,0.28)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, y+s);
+  ctx.lineTo(x, y+s+38);
+  ctx.stroke();
+
+  // body
+  ctx.fillStyle = `rgb(${b.col[0]},${b.col[1]},${b.col[2]})`;
+  ctx.beginPath();
+  ctx.ellipse(x,y, s*0.8, s*1.0, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // highlight
+  ctx.fillStyle = "rgba(255,255,255,0.22)";
+  ctx.beginPath();
+  ctx.ellipse(x - s*0.25, y - s*0.15, s*0.28, s*0.45, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  // knot
+  ctx.fillStyle = `rgb(${b.col[0]},${b.col[1]},${b.col[2]})`;
+  ctx.beginPath();
+  ctx.moveTo(x, y+s*0.95);
+  ctx.lineTo(x-4, y+s*1.12);
+  ctx.lineTo(x+4, y+s*1.12);
+  ctx.closePath();
+  ctx.fill();
+}
+function updateBalloons(tick){
+  if(Math.random()<0.03) spawnBalloon();
+  const next=[];
+  for(const b of balloons){
+    b.y -= b.vy;
+    b.x += b.vx;
+    if(b.y<-120) continue;
+    drawBalloon(b,tick);
+    next.push(b);
+  }
+  balloons = next;
+}
+
+/* =========================
+   Fireworks (ported)
+   ========================= */
+let fireworks = [];
+function spawnFirework(){
+  const x = 140 + Math.random()*(innerWidth-280);
+  const y = 120 + Math.random()*200;
+  const colors = [
+    [255,70,120],[255,170,70],[255,230,120],[160,120,255],[80,220,255]
+  ];
+  const col = colors[(Math.random()*colors.length)|0];
+
+  const parts = [];
+  for(let i=0;i<65;i++){
+    const ang = Math.random()*Math.PI*2;
+    const sp  = 2.2 + Math.random()*3.8;
+    parts.push({
+      x,y,
+      vx: Math.cos(ang)*sp,
+      vy: Math.sin(ang)*sp,
+      life: 40 + (Math.random()*40|0),
+      col
+    });
+  }
+  fireworks.push(parts);
+}
 
 function updateFireworks(){
-  fireworks.forEach(p=>{
-    p.x+=p.vx;
-    p.y+=p.vy;
-    p.life--;
-  });
-  fireworks = fireworks.filter(p=>p.life>0);
+  const newFW = [];
+  for(const fw of fireworks){
+    const alive = [];
+    for(const p of fw){
+      if(p.life<=0) continue;
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.06;        // gravity
+      p.vx *= 0.985;
+      p.vy *= 0.985;
+      p.life -= 1;
 
-  fireworks.forEach(p=>{
-    ctx.fillStyle="rgba(255,200,120,"+(p.life/70)+")";
-    ctx.fillRect(p.x,p.y,3,3);
-  });
+      const a = clamp((p.life/80), 0, 1);
+      ctx.fillStyle = `rgba(${p.col[0]},${p.col[1]},${p.col[2]},${a})`;
+      ctx.fillRect(p.x, p.y, 3, 3);
+      alive.push(p);
+    }
+    if(alive.length) newFW.push(alive);
+  }
+  fireworks = newFW;
 }
 
-function spawnBalloon(){
-  balloons.push({
-    x:Math.random()*canvas.width,
-    y:canvas.height+40,
-    vy:1+Math.random()*1.5,
-    size:15+Math.random()*10
-  });
+/* =========================
+   Cake + candle (ported design)
+   ========================= */
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
 }
 
-function updateBalloons(){
-  balloons.forEach(b=>{
-    b.y-=b.vy;
-  });
-  balloons = balloons.filter(b=>b.y>-100);
+function tier(x,y,w,h,r){
+  // body
+  ctx.fillStyle = "rgb(255,220,235)";
+  roundRect(x,y,w,h,r);
+  ctx.fill();
 
-  balloons.forEach(b=>{
-    ctx.fillStyle="pink";
+  // shade right
+  ctx.fillStyle = "rgba(0,0,0,0.11)";
+  roundRect(x + w*0.62, y, w*0.38, h, r);
+  ctx.fill();
+
+  // highlight ellipse
+  ctx.fillStyle = "rgba(255,255,255,0.09)";
+  ctx.beginPath();
+  ctx.ellipse(x + w*0.42, y + h*0.28, w*0.30, h*0.21, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  return {x,y,w,h,r};
+}
+
+function frostingCap(rect, capH){
+  const cap = {x: rect.x-12, y: rect.y - capH + 10, w: rect.w+24, h: capH, r: 48};
+  ctx.fillStyle = "rgb(255,105,175)";
+  roundRect(cap.x, cap.y, cap.w, cap.h, cap.r);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(255,255,255,0.09)";
+  ctx.beginPath();
+  ctx.ellipse(cap.x + cap.w*0.43, cap.y + cap.h*0.45, cap.w*0.29, cap.h*0.26, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  return cap;
+}
+
+function drips(cap, count, y0, baseH){
+  const step = cap.w / count;
+  ctx.fillStyle = "rgb(255,105,175)";
+  for(let i=0;i<count;i++){
+    const dx = cap.x + step*(i+0.5);
+    const h = baseH + (i%3)*8;
+
     ctx.beginPath();
-    ctx.ellipse(b.x,b.y,b.size,b.size*1.4,0,0,Math.PI*2);
+    ctx.arc(dx, cap.y + y0, 16, 0, Math.PI*2);
     ctx.fill();
-  });
+
+    roundRect(dx-16, cap.y + y0 - 5, 32, h, 14);
+    ctx.fill();
+  }
 }
 
-canvas.addEventListener("click",(e)=>{
-  let rect = drawCake();
-  let now = Date.now();
+function sprinkles(cap){
+  const cols = [
+    [120,220,255],[255,255,140],[160,255,170],[255,120,180]
+  ];
+  for(let i=0;i<70;i++){
+    const sx = cap.x + 14 + ((i*15) % (cap.w-28));
+    const sy = cap.y + 14 + ((i*29) % 24);
+    const c = cols[i%4];
+    ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+    roundRect(sx, sy, 6, 6, 2);
+    ctx.fill();
+  }
+}
 
-  if(state==="start"){
-    state="light";
-    document.getElementById("instruction").innerText="Tap the candle to LIGHT it";
+function cherries(points){
+  for(const [rx,ry] of points){
+    ctx.fillStyle = "rgb(210,40,80)";
+    ctx.beginPath(); ctx.arc(rx,ry,10,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(rx-3,ry-3,3,0,Math.PI*2); ctx.fill();
+  }
+}
+
+function drawCake(candleLit, flameTick){
+  const cx = innerWidth/2;
+  const cy = innerHeight/2 + 110;
+
+  // shadow ellipse
+  ctx.fillStyle = "rgba(0,0,0,0.28)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy+170, 205, 20, 0, 0, Math.PI*2);
+  ctx.fill();
+
+  const base = tier(cx-180, cy+10, 360, 160, 42);
+  const mid  = tier(cx-140, cy-55, 280, 120, 38);
+  const top  = tier(cx-100, cy-110, 200, 90,  34);
+
+  const capBase = frostingCap(base, 70);
+  const capMid  = frostingCap(mid,  62);
+  const capTop  = frostingCap(top,  56);
+
+  drips(capBase, 11, 58, 36);
+  drips(capMid,   9, 52, 32);
+  drips(capTop,   7, 46, 26);
+
+  sprinkles(capTop);
+
+  cherries([
+    [mid.x + mid.w/2 - 70, mid.y - 10],
+    [mid.x + mid.w/2 + 70, mid.y - 10],
+    [base.x + base.w/2 - 110, base.y + 5],
+    [base.x + base.w/2 + 110, base.y + 5],
+  ]);
+
+  // Candle adjusted (fits cake)
+  const candle = {x: cx-12, y: top.y-78, w: 24, h: 78};
+  ctx.fillStyle = "rgb(255,240,245)";
+  roundRect(candle.x, candle.y, candle.w, candle.h, 9);
+  ctx.fill();
+
+  ctx.strokeStyle = "rgb(255,110,170)";
+  ctx.lineWidth = 3;
+  for(let i=0;i<5;i++){
+    const yy = candle.y + 10 + i*13;
+    ctx.beginPath();
+    ctx.moveTo(candle.x+4, yy);
+    ctx.lineTo(candle.x+20, yy);
+    ctx.stroke();
   }
 
-  else if(state==="light"){
-    if(e.clientX>rect.x && e.clientX<rect.x+rect.w &&
-       e.clientY>rect.y && e.clientY<rect.y+rect.h){
-        candleLit=true;
-        document.getElementById("music").play();
-        state="blow";
-        document.getElementById("instruction").innerText="Make a wish... then double tap to blow it out";
+  // wick
+  ctx.strokeStyle = "rgb(60,30,30)";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(cx, candle.y+6);
+  ctx.lineTo(cx, candle.y-10);
+  ctx.stroke();
+
+  // flame
+  if(candleLit){
+    // glow
+    ctx.fillStyle = "rgba(255,140,0,0.14)";
+    ctx.beginPath(); ctx.arc(cx, candle.y-20, 52, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "rgba(255,140,0,0.25)";
+    ctx.beginPath(); ctx.arc(cx, candle.y-20, 38, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "rgba(255,140,0,0.41)";
+    ctx.beginPath(); ctx.arc(cx, candle.y-20, 26, 0, Math.PI*2); ctx.fill();
+
+    const flick = 1.0 + 0.08*Math.sin(flameTick*0.18);
+    const flameH = 36*flick;
+    const flameW = 18*flick;
+
+    // outer
+    ctx.fillStyle = "rgba(255,140,0,0.92)";
+    ctx.beginPath();
+    ctx.ellipse(cx, candle.y-22, flameW/2, flameH/2, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // inner
+    ctx.fillStyle = "rgba(255,230,120,0.94)";
+    ctx.beginPath();
+    ctx.ellipse(cx, candle.y-18, Math.max(2,flameW/2-4), Math.max(2,flameH/2-7), 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // highlight
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.beginPath();
+    ctx.arc(cx+4, candle.y-30, 4, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // hitbox around candle (same idea)
+  return {x: cx-55, y: top.y-120, w: 110, h: 170};
+}
+
+/* =========================
+   UI pill + message logic
+   ========================= */
+const pill = document.getElementById("pill");
+const msgWrap = document.getElementById("msgWrap");
+const msg = document.getElementById("msg");
+const music = document.getElementById("music");
+
+const STATE_START="start", STATE_LIGHT="light", STATE_BLOW="blow", STATE_MESSAGE="message";
+let state = STATE_START;
+let candleLit = false;
+let flameTick = 0;
+
+let lastTapTime = 0;
+let lastTapPos = {x:0,y:0};
+
+const rawMessage = [
+  "We just met 2 days ago, but I still felt something real.",
+  "You're beautiful just the way you are.",
+  "Keep shining."
+];
+
+let wrappedLines = [];
+function rebuildWrappedLines(){
+  const maxW = Math.min(560, innerWidth*0.78);
+  const font = "18px system-ui,-apple-system,Segoe UI,Roboto,Arial";
+  wrappedLines = [];
+  for(const ln of rawMessage){
+    wrappedLines.push(...wrapText(ln, maxW, font));
+  }
+}
+rebuildWrappedLines();
+
+let revealLines = 0;
+let revealTimer = 0;
+
+/* =========================
+   Click/tap handling
+   ========================= */
+function inRect(px,py,r){
+  return px>=r.x && px<=r.x+r.w && py>=r.y && py<=r.y+r.h;
+}
+
+function userTap(x,y){
+  const now = performance.now();
+
+  if(state===STATE_START){
+    state = STATE_LIGHT;
+    pill.textContent = "Tap the candle to LIGHT it";
+    return;
+  }
+
+  // we need candle hitbox at current frame, so compute once here:
+  const hit = lastCandleHitbox;
+
+  if(state===STATE_LIGHT){
+    if(inRect(x,y,hit)){
+      candleLit = true;
+      // browser requires user gesture (this tap qualifies)
+      music.volume = 0.85;
+      music.play().catch(()=>{});
+      state = STATE_BLOW;
+      pill.textContent = "Make a wish... then DOUBLE-TAP the candle to blow it out";
     }
+    return;
   }
 
-  else if(state==="blow"){
-    if(now-lastClick<300){
-      candleLit=false;
-      state="message";
-      document.getElementById("instruction").innerText="Wish comes true ✨";
-      spawnFirework();
-      revealMessage();
+  if(state===STATE_BLOW){
+    const isFast = (now - lastTapTime) < 330;
+    const isClose = Math.abs(x-lastTapPos.x) < 35 && Math.abs(y-lastTapPos.y) < 35;
+
+    if(isFast && isClose && inRect(x,y,hit)){
+      candleLit = false;
+      state = STATE_MESSAGE;
+      pill.textContent = "Wish becomes true ✨";
+      msgWrap.style.display = "block";
+      msg.textContent = "";
+      revealLines = 0;
+      revealTimer = 0;
     }
-  }
 
-  lastClick=now;
+    lastTapTime = now;
+    lastTapPos = {x,y};
+    return;
+  }
+}
+
+canvas.addEventListener("pointerdown",(e)=>{
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  userTap(x,y);
 });
 
-function revealMessage(){
-  let box = document.getElementById("message");
-  box.innerHTML="";
-  let i=0;
-  let interval=setInterval(()=>{
-    if(i>=messageLines.length){
-      clearInterval(interval);
-      return;
+/* =========================
+   Main loop
+   ========================= */
+let last = performance.now();
+let ticks = 0;
+let lastCandleHitbox = {x:0,y:0,w:0,h:0};
+
+function loop(t){
+  const dt = (t-last)/1000; last=t;
+  ticks++;
+  flameTick++;
+
+  // background
+  drawGradientBG();
+  drawStars(ticks);
+
+  // balloons always
+  updateBalloons(ticks);
+
+  // hearts only later (same rule)
+  if((state===STATE_BLOW || state===STATE_MESSAGE) && Math.random()<0.06){
+    spawnFloatingHeart();
+  }
+  updateHearts();
+
+  // cake
+  lastCandleHitbox = drawCake(candleLit, flameTick);
+
+  // fireworks + message reveal in message state
+  if(state===STATE_MESSAGE){
+    revealTimer += dt;
+    if(revealTimer>=0.55){
+      revealTimer = 0;
+      revealLines = clamp(revealLines+1, 0, wrappedLines.length);
+      msg.textContent = wrappedLines.slice(0,revealLines).join("\n");
     }
-    box.innerHTML+=messageLines[i]+"<br>";
-    i++;
-  },700);
-}
 
-function loop(){
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  drawStars();
-  drawCake();
-
-  if(state==="message"){
     if(Math.random()<0.07) spawnFirework();
-    if(Math.random()<0.04) spawnBalloon();
     updateFireworks();
-    updateBalloons();
+  }
+
+  // sparkle on pill during message (like pygame)
+  if(state===STATE_MESSAGE){
+    const pr = pill.getBoundingClientRect();
+    const a = 0.55 + 0.35*(0.5+0.5*Math.sin(ticks*0.10));
+    // draw sparkle near pill (canvas space)
+    const sx1 = pr.left + pr.width - 28;
+    const sy1 = pr.top + pr.height/2 - 6;
+    const sx2 = pr.left + pr.width - 14;
+    const sy2 = pr.top + pr.height/2 + 4;
+    drawSparkle(sx1, sy1, 6, `rgba(255,230,140,${a})`);
+    drawSparkle(sx2, sy2, 4, `rgba(160,220,255,${a})`);
   }
 
   requestAnimationFrame(loop);
 }
+requestAnimationFrame(loop);
 
-loop();
+/* Keep wrap lines correct on resize */
+addEventListener("resize", ()=>{
+  initStars();
+  rebuildWrappedLines();
+});
 </script>
-
 </body>
 </html>
