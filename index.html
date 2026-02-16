@@ -1,0 +1,641 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>Happy Birthday</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; background:#12051f; overflow:hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    canvas { display:block; width:100vw; height:100vh; touch-action: manipulation; } /* allow double-tap */
+    .hint {
+      position: fixed; left: 50%; transform: translateX(-50%);
+      top: 14px; padding: 10px 16px; border-radius: 16px;
+      background: rgba(0,0,0,.25); color: rgba(255,255,255,.92);
+      font-size: 14px; letter-spacing: .2px; backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.10);
+      pointer-events:none;
+      max-width: 90vw; text-align:center;
+    }
+  </style>
+</head>
+<body>
+  <div class="hint" id="hint">Tap anywhere to start</div>
+  <canvas id="c"></canvas>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const hintEl = document.getElementById('hint');
+
+  // ---------- Resize ----------
+  function resize() {
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    canvas.width = Math.floor(window.innerWidth * dpr);
+    canvas.height = Math.floor(window.innerHeight * dpr);
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---------- Utility ----------
+  const clamp = (x,a,b)=>Math.max(a,Math.min(b,x));
+  const lerp = (a,b,t)=>a+(b-a)*t;
+  const rand = (a,b)=>a+Math.random()*(b-a);
+  const randi = (a,b)=>Math.floor(rand(a,b+1));
+
+  // ---------- State ----------
+  const STATE_START="start", STATE_LIGHT="light", STATE_BLOW="blow", STATE_MESSAGE="message";
+  let state = STATE_START;
+  let candleLit = false;
+
+  // message reveal
+  const messageLines = [
+    "We just met 2 days ago, but I still felt something real.",
+    "You're beautiful just the way you are.",
+    "Keep shining."
+  ];
+  let revealT = 0; // increases to reveal lines
+
+  // double tap handling
+  let lastTapTime = 0;
+  let lastTapX = 0, lastTapY = 0;
+
+  // ---------- Background stars ----------
+  const stars = Array.from({length: 140}, () => ({
+    x: Math.random(), y: Math.random(),
+    r: Math.random() < .75 ? 1 : 2,
+    tw: rand(0.4, 1.1)
+  }));
+
+  // ---------- Floating hearts ----------
+  const hearts = [];
+  function spawnHeart() {
+    hearts.push({
+      x: rand(30, W()-30),
+      y: H() + 30,
+      vy: rand(0.5, 1.3),
+      size: rand(12, 22),
+      a: 1
+    });
+  }
+
+  // ---------- Balloons ----------
+  const balloons = [];
+  function spawnBalloon() {
+    const colors = ["#ff4d7d","#ff8a4d","#ffd24d","#6be4ff","#a98bff","#7dffb2"];
+    const c = colors[randi(0, colors.length-1)];
+    balloons.push({
+      x: rand(40, W()-40),
+      y: H() + 80,
+      vy: rand(0.35, 0.8),
+      size: rand(22, 34),
+      sway: rand(0.8, 1.6),
+      phase: rand(0, Math.PI*2),
+      color: c,
+      a: 1
+    });
+  }
+
+  // ---------- Fireworks ----------
+  const fireworks = [];
+  function spawnFirework() {
+    const x = rand(120, W()-120);
+    const y = rand(120, Math.min(340, H()*0.5));
+    const colors = ["#ff4d7d","#ffb84d","#ffe08a","#8fd3ff","#b68cff"];
+    const col = colors[randi(0, colors.length-1)];
+    const parts = [];
+    const count = randi(45, 70);
+    for (let i=0;i<count;i++){
+      const ang = rand(0, Math.PI*2);
+      const sp = rand(1.8, 5.6);
+      parts.push({x,y, vx:Math.cos(ang)*sp, vy:Math.sin(ang)*sp, life:randi(40,75), col});
+    }
+    fireworks.push(parts);
+  }
+
+  // ---------- Layout helpers ----------
+  function W(){ return window.innerWidth; }
+  function H(){ return window.innerHeight; }
+
+  // cake / candle positioning (scales for phone)
+  function layout(){
+    const w = W(), h = H();
+    const scale = clamp(Math.min(w/420, h/760), 0.78, 1.15);
+    const cx = w*0.5;
+    const cakeY = h*0.56;
+    return {scale, cx, cakeY};
+  }
+
+  // Candle hitbox in screen coords
+  function candleHitbox(){
+    const {scale, cx, cakeY} = layout();
+    const candleH = 92*scale;
+    const candleW = 26*scale;
+    const topY = cakeY - 170*scale;
+    const x = cx - candleW/2;
+    const y = topY;
+    // make hitbox a bit bigger for phone
+    return {x:x-18*scale, y:y-24*scale, w:candleW+36*scale, h:candleH+52*scale};
+  }
+
+  // ---------- Draw helpers ----------
+  function roundRect(x,y,w,h,r){
+    r = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+
+  function drawGradient(){
+    const g = ctx.createLinearGradient(0,0,0,H());
+    g.addColorStop(0, "#2b0b5a");
+    g.addColorStop(0.55, "#5a1aa6");
+    g.addColorStop(1, "#12051f");
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W(),H());
+  }
+
+  function drawStars(t){
+    for(const s of stars){
+      const x = s.x * W();
+      const y = s.y * H();
+      const tw = 0.5 + 0.5*Math.sin(t*0.0018*s.tw + s.x*10);
+      const a = 0.55 + 0.45*tw;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.arc(x,y,s.r,0,Math.PI*2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawHeart(x,y,size,color,alpha=1){
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    const s = size;
+    ctx.moveTo(x, y + s*0.25);
+    ctx.bezierCurveTo(x - s, y - s*0.35, x - s*0.9, y + s*0.85, x, y + s);
+    ctx.bezierCurveTo(x + s*0.9, y + s*0.85, x + s, y - s*0.35, x, y + s*0.25);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawBalloon(b){
+    const t = performance.now()*0.001;
+    const sway = Math.sin(t*b.sway + b.phase) * 10;
+    const x = b.x + sway;
+    const y = b.y;
+    const r = b.size;
+
+    ctx.save();
+    ctx.globalAlpha = b.a;
+
+    // string
+    ctx.strokeStyle = "rgba(255,255,255,.45)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y + r*1.2);
+    ctx.quadraticCurveTo(x + sway*0.7, y + r*1.9, x + sway*0.2, y + r*2.6);
+    ctx.stroke();
+
+    // balloon body
+    const g = ctx.createRadialGradient(x - r*0.3, y - r*0.3, r*0.2, x, y, r*1.4);
+    g.addColorStop(0, "rgba(255,255,255,.65)");
+    g.addColorStop(0.15, b.color);
+    g.addColorStop(1, "rgba(0,0,0,.2)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(x, y, r*0.95, r*1.2, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    // knot
+    ctx.fillStyle = "rgba(0,0,0,.15)";
+    ctx.beginPath();
+    ctx.ellipse(x, y + r*1.2, r*0.18, r*0.12, 0, 0, Math.PI*2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // ---------- Cake (better looking, 3 tiers, clean) ----------
+  function drawCake(){
+    const {scale, cx, cakeY} = layout();
+
+    // shadow
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = "#000";
+    ctx.beginPath();
+    ctx.ellipse(cx, cakeY + 175*scale, 210*scale, 30*scale, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+
+    // tier settings: bottom big -> middle -> top
+    const tiers = [
+      {w: 380, h: 140, y: cakeY + 30,  base:"#fff4fb", side:"#f3d3e6", icing:"#ff67b1"},
+      {w: 300, h: 120, y: cakeY - 70,  base:"#fff7ff", side:"#f1d7ea", icing:"#ff78bd"},
+      {w: 220, h:  95, y: cakeY - 155, base:"#fffafc", side:"#ead2e4", icing:"#ff8bc8"}
+    ].map(t => ({...t, w:t.w*scale, h:t.h*scale, y:t.y*scale}));
+
+    // plate-ish back shadow
+    ctx.save();
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = "#000";
+    roundRect(cx - 210*scale, cakeY - 30*scale, 420*scale, 260*scale, 34*scale);
+    ctx.fill();
+    ctx.restore();
+
+    // draw each tier (base + gentle side shade + icing drips)
+    for (let i=0;i<tiers.length;i++){
+      const t = tiers[i];
+      const x = cx - t.w/2;
+      const y = t.y;
+
+      // base
+      ctx.fillStyle = t.base;
+      roundRect(x, y, t.w, t.h, 26*scale);
+      ctx.fill();
+
+      // side shade (right)
+      ctx.save();
+      ctx.globalAlpha = 0.22;
+      ctx.fillStyle = "#000";
+      roundRect(x + t.w*0.58, y, t.w*0.42, t.h, 26*scale);
+      ctx.fill();
+      ctx.restore();
+
+      // top icing slab
+      const icingH = 44*scale;
+      ctx.fillStyle = t.icing;
+      roundRect(x - 8*scale, y - icingH*0.55, t.w + 16*scale, icingH, 22*scale);
+      ctx.fill();
+
+      // icing highlight
+      ctx.save();
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = "#fff";
+      roundRect(x + 18*scale, y - icingH*0.38, t.w*0.55, icingH*0.45, 18*scale);
+      ctx.fill();
+      ctx.restore();
+
+      // drips (cute rounded)
+      ctx.fillStyle = t.icing;
+      const dripCount = i===0 ? 7 : (i===1 ? 6 : 5);
+      for(let d=0; d<dripCount; d++){
+        const dx = x + (t.w/(dripCount+1))*(d+1);
+        const dripW = rand(22, 34)*scale;
+        const dripH = rand(24, 44)*scale * (i===0 ? 1.15 : 1.0);
+        roundRect(dx - dripW/2, y + 10*scale, dripW, dripH, 14*scale);
+        ctx.fill();
+      }
+
+      // sprinkles only on top tier
+      if (i === tiers.length-1){
+        const sprinkleN = 70;
+        for (let s=0; s<sprinkleN; s++){
+          const sx = rand(x + 14*scale, x + t.w - 14*scale);
+          const sy = rand(y - 22*scale, y + 6*scale);
+          const colors = ["#ffd24d","#6be4ff","#a98bff","#7dffb2","#ff4d7d"];
+          ctx.fillStyle = colors[randi(0, colors.length-1)];
+          ctx.globalAlpha = 0.9;
+          ctx.fillRect(sx, sy, 3*scale, 3*scale);
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  // ---------- Candle + flame ----------
+  function drawCandle(){
+    const {scale, cx, cakeY} = layout();
+    const candleW = 26*scale, candleH = 92*scale;
+    const x = cx - candleW/2;
+    const y = (cakeY - 155*scale) - 40*scale; // sits on top tier
+
+    // candle
+    ctx.fillStyle = "#fff1f7";
+    roundRect(x, y, candleW, candleH, 10*scale);
+    ctx.fill();
+
+    // stripes
+    ctx.strokeStyle = "#ff6fb3";
+    ctx.lineWidth = 3*scale;
+    for(let i=0;i<6;i++){
+      const yy = y + 12*scale + i*14*scale;
+      ctx.beginPath();
+      ctx.moveTo(x + 4*scale, yy);
+      ctx.lineTo(x + candleW - 4*scale, yy);
+      ctx.stroke();
+    }
+
+    // wick
+    ctx.strokeStyle = "#3b1c1c";
+    ctx.lineWidth = 3*scale;
+    ctx.beginPath();
+    ctx.moveTo(cx, y + 6*scale);
+    ctx.lineTo(cx, y - 10*scale);
+    ctx.stroke();
+
+    // flame
+    if (candleLit){
+      const t = performance.now()*0.001;
+      const flick = 1 + 0.08*Math.sin(t*10);
+      const fw = 22*scale*flick;
+      const fh = 42*scale*flick;
+      const fx = cx;
+      const fy = y - 18*scale;
+
+      // glow
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      const glow = ctx.createRadialGradient(fx, fy, 2, fx, fy, 70*scale);
+      glow.addColorStop(0, "rgba(255,210,120,.85)");
+      glow.addColorStop(0.35, "rgba(255,140,0,.35)");
+      glow.addColorStop(1, "rgba(255,140,0,0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(fx, fy, 70*scale, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+
+      // flame body
+      ctx.save();
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = "#ff9a1f";
+      ctx.beginPath();
+      ctx.ellipse(fx, fy, fw*0.55, fh*0.55, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.fillStyle = "#ffe08a";
+      ctx.beginPath();
+      ctx.ellipse(fx+2*scale, fy+6*scale, fw*0.33, fh*0.35, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+
+      // sparks
+      if (Math.random() < 0.3){
+        sparkles.push({x:fx+rand(-8,8), y:fy+rand(-10,0), vx:rand(-.4,.4), vy:rand(-1.2,-.6), life:randi(10,18)});
+      }
+    }
+
+    return {x, y, w:candleW, h:candleH};
+  }
+
+  // tiny spark particles near flame
+  const sparkles = [];
+  function updateSparkles(){
+    for (let i=sparkles.length-1;i>=0;i--){
+      const p = sparkles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vy += 0.03;
+      p.life -= 1;
+      if (p.life <= 0) sparkles.splice(i,1);
+    }
+    ctx.save();
+    for (const p of sparkles){
+      const a = p.life/18;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "#ffd24d";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2, 0, Math.PI*2);
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  // ---------- Text ----------
+  function drawTitle(){
+    const w = W();
+    const size = clamp(w/9, 44, 86);
+    ctx.font = `800 ${size}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+    ctx.textAlign="center"; ctx.textBaseline="middle";
+
+    // shadow
+    ctx.fillStyle="rgba(0,0,0,.22)";
+    ctx.fillText("Happy Birthday", w/2, 92);
+
+    // main
+    ctx.fillStyle="#fff";
+    ctx.fillText("Happy Birthday", w/2, 88);
+
+    // heart at right
+    drawHeart(w/2 + ctx.measureText("Happy Birthday").width/2 + 36, 88, 18, "#ff4d7d");
+  }
+
+  function setHint(){
+    if (state === STATE_START) hintEl.textContent = "Tap anywhere to start";
+    if (state === STATE_LIGHT) hintEl.textContent = "Tap the candle to LIGHT it";
+    if (state === STATE_BLOW)  hintEl.textContent = "Double-tap the candle to BLOW it out";
+    if (state === STATE_MESSAGE) hintEl.textContent = "Make a wish ✨";
+  }
+
+  function drawMessageCard(){
+    const w = W(), h = H();
+    const cardW = clamp(w*0.88, 280, 720);
+    const cardH = 148;
+    const x = (w-cardW)/2;
+    const y = h - cardH - 28;
+
+    // card
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,.28)";
+    roundRect(x,y,cardW,cardH,22);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(255,255,255,.12)";
+    ctx.lineWidth = 2;
+    roundRect(x,y,cardW,cardH,22);
+    ctx.stroke();
+    ctx.restore();
+
+    // reveal lines one by one
+    ctx.textAlign="center";
+    ctx.textBaseline="middle";
+    ctx.font = `500 18px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+    const baseY = y + 44;
+    for(let i=0;i<messageLines.length;i++){
+      const a = clamp((revealT - i*0.9), 0, 1);
+      if (a <= 0) continue;
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "rgba(255,255,255,.92)";
+      ctx.fillText(messageLines[i], w/2, baseY + i*34);
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---------- Update loops ----------
+  function updateHearts(){
+    if ((state === STATE_BLOW || state === STATE_MESSAGE) && Math.random() < 0.05) spawnHeart();
+    for (let i=hearts.length-1;i>=0;i--){
+      const h = hearts[i];
+      h.y -= h.vy;
+      h.a -= 0.004;
+      if (h.a <= 0 || h.y < -80) hearts.splice(i,1);
+    }
+    for(const h of hearts){
+      drawHeart(h.x, h.y, h.size, "#ff4d7d", h.a);
+    }
+  }
+
+  function updateBalloons(){
+    if ((state === STATE_BLOW || state === STATE_MESSAGE) && Math.random() < 0.03) spawnBalloon();
+    for (let i=balloons.length-1;i>=0;i--){
+      const b = balloons[i];
+      b.y -= b.vy;
+      b.a -= 0.0012;
+      if (b.a <= 0 || b.y < -120) balloons.splice(i,1);
+    }
+    for(const b of balloons) drawBalloon(b);
+  }
+
+  function updateFireworks(){
+    // spawn only in MESSAGE
+    if (state === STATE_MESSAGE && Math.random() < 0.06) spawnFirework();
+
+    // draw particles with fade
+    for (let i=fireworks.length-1;i>=0;i--){
+      const fw = fireworks[i];
+      for (let j=fw.length-1;j>=0;j--){
+        const p = fw[j];
+        p.x += p.vx; p.y += p.vy;
+        p.vy += 0.06; // gravity
+        p.vx *= 0.985; p.vy *= 0.985;
+        p.life -= 1;
+        if (p.life <= 0) fw.splice(j,1);
+      }
+      if (fw.length === 0) fireworks.splice(i,1);
+    }
+
+    for(const fw of fireworks){
+      for(const p of fw){
+        const a = clamp(p.life/75, 0, 1);
+        ctx.save();
+        ctx.globalAlpha = a;
+        ctx.fillStyle = p.col;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3, 0, Math.PI*2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // ---------- Audio (mobile needs user interaction) ----------
+  let audioStarted = false;
+  let audio;
+  // Put your MP3 as "song.mp3" in the same folder as index.html on GitHub
+  function startAudio(){
+    if (audioStarted) return;
+    audioStarted = true;
+    audio = new Audio("song.mp3");
+    audio.loop = true;
+    audio.volume = 0.85;
+    audio.play().catch(()=>{/* user may block, okay */});
+  }
+
+  // ---------- Input ----------
+  function pointInRect(px,py,r){ return px>=r.x && px<=r.x+r.w && py>=r.y && py<=r.y+r.h; }
+
+  function onTap(x,y){
+    const now = performance.now();
+    const hb = candleHitbox();
+
+    if (state === STATE_START){
+      state = STATE_LIGHT;
+      setHint();
+      return;
+    }
+
+    if (state === STATE_LIGHT){
+      if (pointInRect(x,y,hb)){
+        candleLit = true;
+        startAudio();
+        state = STATE_BLOW;
+        setHint();
+      }
+      return;
+    }
+
+    if (state === STATE_BLOW){
+      // double tap detection near candle
+      const fast = (now - lastTapTime) < 320;
+      const close = (Math.abs(x-lastTapX) < 36 && Math.abs(y-lastTapY) < 36);
+      if (fast && close && pointInRect(x,y,hb)){
+        candleLit = false;
+        state = STATE_MESSAGE;
+        revealT = 0;
+        setHint();
+      }
+      lastTapTime = now; lastTapX = x; lastTapY = y;
+      return;
+    }
+
+    // message: no action needed
+  }
+
+  // touch + mouse
+  canvas.addEventListener('pointerdown', (e)=>{
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    onTap(x,y);
+  });
+
+  // prevent double-tap zoom on iOS
+  let lastTouchEnd = 0;
+  document.addEventListener('touchend', (e) => {
+    const now = Date.now();
+    if (now - lastTouchEnd <= 300) e.preventDefault();
+    lastTouchEnd = now;
+  }, { passive: false });
+
+  // ---------- Main loop ----------
+  setHint();
+  let t0 = performance.now();
+  function frame(t){
+    const dt = (t - t0) / 1000;
+    t0 = t;
+
+    drawGradient();
+    drawStars(t);
+
+    updateBalloons();
+    updateHearts();
+
+    // cake + candle
+    drawCake();
+    drawCandle();
+    updateSparkles();
+
+    // fireworks behind UI text but over bg
+    updateFireworks();
+
+    // message reveal
+    if (state === STATE_MESSAGE){
+      revealT += dt * 1.2; // speed of line reveal
+      drawMessageCard();
+    }
+
+    // hint text stays top via HTML overlay
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
